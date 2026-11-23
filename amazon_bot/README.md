@@ -26,6 +26,13 @@ se guarda en `.browser_profile/` (ignorado por git); el bot **nunca ve ni guarda
 | `url` o `asin` | producto |
 | `max_price` | precio máximo por unidad; también se verifica el total del pedido |
 | `quantity` | unidades (por defecto 1) |
+| `allow_used` | `true` para aceptar ofertas usadas/reacondicionadas en "Ver todas las opciones de compra" (por defecto `false`) |
+| `seller` | texto que debe contener el vendedor, p. ej. `"Amazon"` (opcional) |
+| `max_extra` | margen extra permitido para envío en el total (por defecto 0) |
+
+Si el producto no tiene botón de compra, o el precio principal supera `max_price`, el bot abre
+"Ver todas las opciones de compra" y elige la oferta más barata (precio + envío) que cumpla las
+condiciones. Por esa vía solo se admite `quantity` 1.
 
 ## Seguridad
 - Por defecto es simulación; `--live` es explícito.
