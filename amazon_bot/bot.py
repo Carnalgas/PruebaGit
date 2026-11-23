@@ -282,28 +282,6 @@ def best_offer(page: Page, p: dict):
     return best
 
 
-# --- Carga ligera: no descargar lo que no hace falta para ver precio y stock ---
-BLOCK_TYPES = {"image", "media", "font"}
-BLOCK_HOSTS = ("amazon-adsystem.com", "doubleclick.net", "googlesyndication.com",
-               "googletagservices.com", "adnxs.com")
-
-
-class Blocker:
-    """Bloquea imágenes, fuentes, videos y anuncios. Se apaga para iniciar sesión o
-    resolver un captcha, porque ahí sí necesitas ver las imágenes."""
-    def __init__(self, enabled: bool):
-        self.enabled = enabled
-
-    def install(self, ctx):
-        def handler(route):
-            req = route.request
-            if self.enabled and (req.resource_type in BLOCK_TYPES
-                                 or any(h in req.url for h in BLOCK_HOSTS)):
-                return route.abort()
-            return route.continue_()
-        ctx.route("**/*", handler)
-
-
 def has_captcha(page: Page) -> bool:
     try:
         return page.locator("form[action*='validateCaptcha']").count() > 0
@@ -311,25 +289,17 @@ def has_captcha(page: Page) -> bool:
         return False
 
 
-def wait_captcha_solved(page: Page, blocker: Blocker, headless: bool, wait_seconds: int = 300) -> bool:
-    """Recarga con imágenes para que puedas resolver el captcha en la ventana."""
+def wait_captcha_solved(page: Page, headless: bool, wait_seconds: int = 300) -> bool:
+    """Espera a que resuelvas el captcha en la ventana del navegador."""
     if headless:
         return False
-    prev = blocker.enabled
-    blocker.enabled = False
-    try:
-        page.reload(wait_until="domcontentloaded")
-    except PWError:
-        pass
     print("\a>>> Amazon pidió un captcha: resuélvelo en la ventana del navegador.")
     deadline = time.time() + wait_seconds
     while time.time() < deadline:
         time.sleep(2)
         if not has_captcha(page):
-            blocker.enabled = prev
             print("Captcha resuelto, continúo.")
             return True
-    blocker.enabled = prev
     return False
 
 
@@ -407,8 +377,6 @@ def main():
     ap.add_argument("--headless", action="store_true", help="sin ventana (requiere sesión ya iniciada)")
     ap.add_argument("--verbose", "-v", action="store_true",
                     help="mostrar cada oferta del panel 'opciones de compra' y por qué se acepta o rechaza")
-    ap.add_argument("--no-block", action="store_true",
-                    help="cargar imágenes/fuentes/anuncios (más lento; úsalo si algo no se detecta bien)")
     args = ap.parse_args()
     global VERBOSE
     VERBOSE = args.verbose
@@ -432,11 +400,8 @@ def main():
         ctx = pw.chromium.launch_persistent_context(
             str(PROFILE_DIR), headless=args.headless, locale=locale,
             viewport={"width": 1280, "height": 900})
-        blocker = Blocker(enabled=False)       # apagado para iniciar sesión
-        blocker.install(ctx)
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
         ensure_login(page, domain)
-        blocker.enabled = not args.no_block
 
         while True:
             pending = [p for p in products if product_key(p) not in state]
@@ -447,7 +412,7 @@ def main():
                 t0 = time.time()
                 res = try_buy(page, p, domain, args.live)
                 if res == "captcha":
-                    if wait_captcha_solved(page, blocker, args.headless):
+                    if wait_captcha_solved(page, args.headless):
                         res = try_buy(page, p, domain, args.live)
                     else:
                         res = "skip:captcha sin resolver"

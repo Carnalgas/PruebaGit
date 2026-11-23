@@ -20,13 +20,12 @@ python bot.py --verbose           # muestra cada oferta de 'opciones de compra' 
 ```
 
 ### Velocidad y captchas
-- Al revisar productos no se descargan imágenes, fuentes, videos ni anuncios (más rápido).
-  Se vuelven a cargar para iniciar sesión o resolver un captcha. `--no-block` lo desactiva.
 - `--watch` espera exactamente los segundos indicados (sin mínimo; `0` = sin espera).
   Intervalos muy cortos hacen que Amazon muestre captchas con más frecuencia.
-- Si aparece un captcha, el bot recarga con imágenes, suena un aviso y espera a que lo
+- Si aparece un captcha, el bot suena un aviso y espera a que lo
   resuelvas (hasta 5 min).
 - El idioma del navegador se ajusta al dominio (`es-MX` para amazon.com.mx).
+
 La primera vez se abre un navegador: inicia sesión tú mismo (2FA incluido). La sesión
 se guarda en `.browser_profile/` (ignorado por git); el bot **nunca ve ni guarda tu contraseña**.
 
