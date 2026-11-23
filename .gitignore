@@ -355,3 +355,5 @@ MigrationBackup/
 amazon_bot/.browser_profile/
 amazon_bot/.purchased.json
 amazon_bot/products.json
+
+amazon_bot/debug/
