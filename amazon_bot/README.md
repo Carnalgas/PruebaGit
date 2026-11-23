@@ -16,6 +16,7 @@ python bot.py                     # simulación (NO compra): llega hasta "Realiz
 python bot.py --live              # compra de verdad
 python bot.py --live --watch 300  # vigila cada 5 min y compra al cumplirse las condiciones
 python bot.py --live --watch 45   # revisión frecuente (mínimo 20 s)
+python bot.py --verbose           # muestra cada oferta de 'opciones de compra' y por qué se acepta/rechaza
 ```
 
 ### Velocidad y captchas

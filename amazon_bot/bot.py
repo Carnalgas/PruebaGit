@@ -150,50 +150,108 @@ def open_all_offers(page: Page, p: dict, domain: str) -> bool:
                 return False
             safe_goto(page, f"https://{domain}/dp/{asin}?aod=1")
         page.wait_for_selector(offers_sel, timeout=10000)
-        page.wait_for_timeout(1500)  # las ofertas terminan de cargar por partes
+        # La oferta fijada (la del precio principal) aparece primero; la lista llega después.
+        try:
+            page.wait_for_selector("#aod-offer-list #aod-offer", timeout=5000)
+        except PWTimeout:
+            pass  # puede que solo exista la oferta fijada
+        try:
+            page.wait_for_load_state("networkidle", timeout=4000)
+        except PWTimeout:
+            pass
+        # Esperar a que el número de ofertas deje de cambiar.
+        prev, stable = -1, 0
+        for _ in range(10):
+            n = page.locator(offers_sel).count()
+            stable = stable + 1 if n == prev else 0
+            if stable >= 2:
+                break
+            prev = n
+            page.wait_for_timeout(400)
         return True
     except (PWError, PWTimeout):
         return False
 
 
+VERBOSE = False
+
+OFFER_PRICE_SELECTORS = (
+    "[id^='aod-price-'] .a-price .a-offscreen",
+    "[id^='aod-price-'] .aok-offscreen",
+    "#aod-offer-price .a-price .a-offscreen",
+    "#aod-offer-price .aok-offscreen",
+    ".a-price .a-offscreen",
+    ".aok-offscreen",
+)
+
+
+def offer_price(o):
+    """Precio de una oferta del panel. Amazon lo pone en distintos elementos."""
+    for sel in OFFER_PRICE_SELECTORS:
+        loc = o.locator(sel)
+        for i in range(min(loc.count(), 3)):
+            t = (loc.nth(i).text_content() or "").strip()
+            if re.search(r"\d", t):
+                return parse_price(t), t
+    whole = o.locator(".a-price-whole").first
+    if whole.count():
+        w = re.sub(r"\D", "", whole.text_content() or "")
+        frac_el = o.locator(".a-price-fraction").first
+        f = re.sub(r"\D", "", frac_el.text_content() or "") if frac_el.count() else ""
+        if w:
+            return float(f"{w}.{f or '0'}"), f"{w}.{f}"
+    return None, ""
+
+
 def best_offer(page: Page, p: dict):
     """Busca en el panel de ofertas la más barata que cumpla las condiciones.
-    Devuelve (oferta, precio, envío, vendedor) o None."""
+    Devuelve (botón, precio, envío, vendedor) o None."""
     allow_used = p.get("allow_used", False)
     seller_filter = (p.get("seller") or "").lower()
     limit = p["max_price"] + p.get("max_extra", 0)
     best = None
+    report = []
     offers = page.locator("#aod-pinned-offer, #aod-offer-list #aod-offer")
     for i in range(offers.count()):
         o = offers.nth(i)
         try:
-            add = o.locator("input[name='submit.addToCart']")
-            if not add.count():
-                continue
-            price_el = o.locator(".a-price .a-offscreen").first
-            price = parse_price(price_el.text_content() if price_el.count() else "")
-            if price is None:
-                continue
-            heading = (o.locator("#aod-offer-heading").first.text_content() or "") \
+            price, raw = offer_price(o)
+            heading = (o.locator("#aod-offer-heading").first.text_content() or "").strip() \
                 if o.locator("#aod-offer-heading").count() else ""
-            if not allow_used and re.search(r"usado|used|reacondicionado|renewed", heading, re.I):
-                continue
+            heading = re.sub(r"\s+", " ", heading)
             seller_el = o.locator("#aod-offer-soldBy a, #aod-offer-soldBy .a-col-right").first
-            seller = (seller_el.text_content() or "").strip() if seller_el.count() else ""
-            if seller_filter and seller_filter not in seller.lower():
-                continue
+            seller = re.sub(r"\s+", " ", (seller_el.text_content() or "").strip()) if seller_el.count() else "?"
             ship = 0.0
             ship_el = o.locator("[data-csa-c-delivery-price]").first
             if ship_el.count():
                 ship_txt = ship_el.get_attribute("data-csa-c-delivery-price") or ""
                 if not re.search(r"gratis|free", ship_txt, re.I):
                     ship = parse_price(ship_txt) or 0.0
-            if price > p["max_price"] or price + ship > limit:
-                continue
-            if best is None or price + ship < best[1] + best[2]:
-                best = (add.first, price, ship, seller or "?")
-        except PWError:
-            continue
+            add = o.locator("input[name='submit.addToCart']")
+
+            if price is None:
+                why = "no se pudo leer el precio"
+            elif not allow_used and re.search(r"usado|used|reacondicionado|renewed", heading, re.I):
+                why = f"es {heading or 'usado'} (allow_used=false)"
+            elif seller_filter and seller_filter not in seller.lower():
+                why = f"vendedor no contiene '{p['seller']}'"
+            elif price > p["max_price"]:
+                why = f"precio > máximo {p['max_price']:.2f}"
+            elif price + ship > limit:
+                why = f"precio + envío {price + ship:.2f} > límite {limit:.2f}"
+            elif not add.count():
+                why = "CUMPLE pero no se encontró su botón 'Agregar al carrito'"
+            else:
+                why = "CUMPLE"
+                if best is None or price + ship < best[1] + best[2]:
+                    best = (add.first, price, ship, seller)
+            report.append(f"    {'✓' if why == 'CUMPLE' else '✗'} {raw or '¿sin precio?'} "
+                          f"+ envío {ship:.2f} | {heading or '-'} | {seller} → {why}")
+        except PWError as e:
+            report.append(f"    ✗ oferta {i}: error leyendo ({str(e).splitlines()[0]})")
+    if VERBOSE:
+        print(f"  Panel de ofertas: {offers.count()} ofertas")
+        print("\n".join(report))
     return best
 
 
@@ -320,9 +378,13 @@ def main():
     ap.add_argument("--live", action="store_true", help="COMPRAR de verdad (si no, simulación)")
     ap.add_argument("--watch", type=int, metavar="SEG", help="repetir cada SEG segundos hasta comprar todo")
     ap.add_argument("--headless", action="store_true", help="sin ventana (requiere sesión ya iniciada)")
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="mostrar cada oferta del panel 'opciones de compra' y por qué se acepta o rechaza")
     ap.add_argument("--no-block", action="store_true",
                     help="cargar imágenes/fuentes/anuncios (más lento; úsalo si algo no se detecta bien)")
     args = ap.parse_args()
+    global VERBOSE
+    VERBOSE = args.verbose
 
     cfg = json.loads(Path(args.config).read_text())
     domain = cfg.get("domain", "www.amazon.es")
