@@ -6,7 +6,6 @@ es <= max_price. Por defecto NO compra (modo simulación); hay que pasar --live.
 """
 import argparse
 import json
-import random
 import re
 import sys
 import time
@@ -404,7 +403,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--config", default=str(HERE / "products.json"))
     ap.add_argument("--live", action="store_true", help="COMPRAR de verdad (si no, simulación)")
-    ap.add_argument("--watch", type=int, metavar="SEG", help="repetir cada SEG segundos hasta comprar todo")
+    ap.add_argument("--watch", type=int, metavar="SEG", help="repetir cada SEG segundos hasta comprar todo (0 = sin espera)")
     ap.add_argument("--headless", action="store_true", help="sin ventana (requiere sesión ya iniciada)")
     ap.add_argument("--verbose", "-v", action="store_true",
                     help="mostrar cada oferta del panel 'opciones de compra' y por qué se acepta o rechaza")
@@ -422,10 +421,6 @@ def main():
         if "max_price" not in p or not (p.get("url") or p.get("asin")):
             sys.exit(f"Producto inválido (necesita url/asin y max_price): {p}")
 
-    MIN_WATCH = 20
-    if args.watch and args.watch < MIN_WATCH:
-        print(f"--watch {args.watch} es muy agresivo y provoca captchas; uso {MIN_WATCH} s.")
-        args.watch = MIN_WATCH
 
     state = load_state()
     if args.live:
@@ -443,20 +438,15 @@ def main():
         ensure_login(page, domain)
         blocker.enabled = not args.no_block
 
-        backoff = 1                            # se multiplica tras cada captcha
         while True:
             pending = [p for p in products if product_key(p) not in state]
             if not pending:
                 print("Todo comprado.")
                 break
-            captcha_this_round = False
-            for i, p in enumerate(pending):
-                if i:
-                    time.sleep(random.uniform(1.5, 4))   # pausa breve entre productos
+            for p in pending:
                 t0 = time.time()
                 res = try_buy(page, p, domain, args.live)
                 if res == "captcha":
-                    captcha_this_round = True
                     if wait_captcha_solved(page, blocker, args.headless):
                         res = try_buy(page, p, domain, args.live)
                     else:
@@ -466,13 +456,10 @@ def main():
                 if res == "bought":
                     state[product_key(p)] = time.strftime("%Y-%m-%d %H:%M:%S")
                     save_state(state)
-            if not args.watch:
+            if args.watch is None:
                 break
-            backoff = min(backoff * 2, 8) if captcha_this_round else max(1, backoff // 2)
-            wait = args.watch * backoff * random.uniform(0.8, 1.25)
-            if backoff > 1:
-                print(f"Hubo captcha: bajo el ritmo, próxima revisión en {wait:.0f} s.")
-            time.sleep(wait)
+            if args.watch > 0:
+                time.sleep(args.watch)
         ctx.close()
 
 

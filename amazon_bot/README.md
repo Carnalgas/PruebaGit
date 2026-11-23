@@ -15,16 +15,17 @@ cp products.example.json products.json   # edítalo con tus productos
 python bot.py                     # simulación (NO compra): llega hasta "Realizar pedido"
 python bot.py --live              # compra de verdad
 python bot.py --live --watch 300  # vigila cada 5 min y compra al cumplirse las condiciones
-python bot.py --live --watch 45   # revisión frecuente (mínimo 20 s)
+python bot.py --live --watch 0    # revisión continua, sin espera entre rondas
 python bot.py --verbose           # muestra cada oferta de 'opciones de compra' y por qué se acepta/rechaza
 ```
 
 ### Velocidad y captchas
 - Al revisar productos no se descargan imágenes, fuentes, videos ni anuncios (más rápido).
   Se vuelven a cargar para iniciar sesión o resolver un captcha. `--no-block` lo desactiva.
-- El intervalo de `--watch` varía ±20 % al azar y hay pausas cortas entre productos.
+- `--watch` espera exactamente los segundos indicados (sin mínimo; `0` = sin espera).
+  Intervalos muy cortos hacen que Amazon muestre captchas con más frecuencia.
 - Si aparece un captcha, el bot recarga con imágenes, suena un aviso y espera a que lo
-  resuelvas (hasta 5 min). Después duplica el intervalo (hasta ×8) y lo recupera poco a poco.
+  resuelvas (hasta 5 min).
 - El idioma del navegador se ajusta al dominio (`es-MX` para amazon.com.mx).
 La primera vez se abre un navegador: inicia sesión tú mismo (2FA incluido). La sesión
 se guarda en `.browser_profile/` (ignorado por git); el bot **nunca ve ni guarda tu contraseña**.
