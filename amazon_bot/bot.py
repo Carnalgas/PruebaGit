@@ -156,69 +156,6 @@ def open_all_offers(page: Page, p: dict, domain: str) -> bool:
         return False
 
 
-ADD_TO_CART_SELECTORS = (
-    "input[name='submit.addToCart']",
-    "input[name*='addToCart']",
-    "button[name*='addToCart']",
-    "[id*='aod-atc'] input, [id*='aod-atc'] button",
-    "[data-action*='atc'] input, [data-action*='atc'] button",
-)
-ADD_TO_CART_TEXT = re.compile(r"agregar al carrito|añadir al carrito|add to cart", re.I)
-
-
-def offer_add_button(offer):
-    """Botón 'Agregar al carrito' de una oferta del panel (Amazon cambia sus nombres)."""
-    for sel in ADD_TO_CART_SELECTORS:
-        loc = offer.locator(sel)
-        if loc.count():
-            return loc.first
-    loc = offer.get_by_role("button", name=ADD_TO_CART_TEXT)
-    if loc.count():
-        return loc.first
-    loc = offer.locator("input[type='submit'][aria-labelledby]")
-    for i in range(loc.count()):
-        lab_id = loc.nth(i).get_attribute("aria-labelledby") or ""
-        lab = offer.locator(f"[id='{lab_id}']")
-        if lab.count() and ADD_TO_CART_TEXT.search(lab.first.text_content() or ""):
-            return loc.nth(i)
-    return None
-
-
-DEBUG_DIR = HERE / "debug"
-
-
-def save_debug(page: Page, tag: str):
-    """Guarda captura y HTML para poder ajustar los selectores."""
-    try:
-        DEBUG_DIR.mkdir(exist_ok=True)
-        base = DEBUG_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}_{tag}"
-        page.screenshot(path=f"{base}.png", full_page=True)
-        Path(f"{base}.html").write_text(page.content(), encoding="utf-8")
-        print(f"  (diagnóstico guardado en {base}.png / .html)")
-    except PWError:
-        pass
-
-
-def cart_count(page: Page):
-    try:
-        t = page.locator("#nav-cart-count").first.text_content(timeout=1000)
-        return int(re.sub(r"\D", "", t or "") or 0)
-    except (PWError, PWTimeout, ValueError):
-        return None
-
-
-def go_to_checkout(page: Page, domain: str) -> bool:
-    safe_goto(page, f"https://{domain}/gp/cart/view.html")
-    btn = page.locator("input[name='proceedToRetailCheckout'], #sc-buy-box-ptc-button input, "
-                       "#sc-buy-box-ptc-button button")
-    try:
-        btn.first.click(timeout=10000)
-        return True
-    except (PWError, PWTimeout):
-        save_debug(page, "carrito_sin_boton_pago")
-        return False
-
-
 def best_offer(page: Page, p: dict):
     """Busca en el panel de ofertas la más barata que cumpla las condiciones.
     Devuelve (oferta, precio, envío, vendedor) o None."""
@@ -226,15 +163,12 @@ def best_offer(page: Page, p: dict):
     seller_filter = (p.get("seller") or "").lower()
     limit = p["max_price"] + p.get("max_extra", 0)
     best = None
-    no_button = 0
     offers = page.locator("#aod-pinned-offer, #aod-offer-list #aod-offer")
-    total_offers = offers.count()
-    for i in range(total_offers):
+    for i in range(offers.count()):
         o = offers.nth(i)
         try:
-            add = offer_add_button(o)
-            if add is None:
-                no_button += 1
+            add = o.locator("input[name='submit.addToCart']")
+            if not add.count():
                 continue
             price_el = o.locator(".a-price .a-offscreen").first
             price = parse_price(price_el.text_content() if price_el.count() else "")
@@ -257,11 +191,9 @@ def best_offer(page: Page, p: dict):
             if price > p["max_price"] or price + ship > limit:
                 continue
             if best is None or price + ship < best[1] + best[2]:
-                best = (add, price, ship, seller or "?")
+                best = (add.first, price, ship, seller or "?")
         except PWError:
             continue
-    if best is None and total_offers and no_button == total_offers:
-        save_debug(page, "aod_sin_boton")
     return best
 
 
@@ -337,8 +269,8 @@ def try_buy(page: Page, p: dict, domain: str, live: bool) -> str:
             buy_now.first.click()
         else:
             add_cart.first.click()
-            if not go_to_checkout(page, domain):
-                return "skip:no encontré 'Proceder al pago' en el carrito"
+            safe_goto(page, f"https://{domain}/gp/cart/view.html")
+            page.locator("input[name='proceedToRetailCheckout']").first.click()
     else:
         # Sin botón de compra, o el precio principal es caro: revisar "Ver todas las opciones de compra".
         why = "sin botón de compra" if not has_buybox else \
@@ -347,23 +279,15 @@ def try_buy(page: Page, p: dict, domain: str, live: bool) -> str:
             return f"skip:{why} y no hay otras ofertas"
         offer = best_offer(page, p)
         if offer is None:
-            return (f"skip:{why} y ninguna oferta en 'opciones de compra' cumple las condiciones"
-                    " (si dice 'diagnóstico guardado', mándame esos archivos)")
+            return f"skip:{why} y ninguna oferta en 'opciones de compra' cumple las condiciones"
         if qty > 1:
             return "skip:hay oferta en 'opciones de compra' pero solo se admite quantity 1 por esa vía"
         button, price, ship, seller = offer
         source = f"opciones de compra (vendedor: {seller}, envío {ship:.2f})"
-        before = cart_count(page)
-        button.scroll_into_view_if_needed()
         button.click()
-        # Esperar a que Amazon confirme que se agregó (sube el contador del carrito).
-        for _ in range(16):
-            page.wait_for_timeout(500)
-            now = cart_count(page)
-            if before is not None and now is not None and now > before:
-                break
-        if not go_to_checkout(page, domain):
-            return "skip:no encontré 'Proceder al pago' en el carrito"
+        page.wait_for_timeout(2000)
+        safe_goto(page, f"https://{domain}/gp/cart/view.html")
+        page.locator("input[name='proceedToRetailCheckout']").first.click()
 
     # Pantalla de revisión del pedido
     try:
