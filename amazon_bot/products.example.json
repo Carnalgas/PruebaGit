@@ -1,0 +1,17 @@
+{
+  "domain": "www.amazon.es",
+  "products": [
+    {
+      "name": "Ejemplo: auriculares",
+      "url": "https://www.amazon.es/dp/B0XXXXXXXX",
+      "max_price": 49.99,
+      "quantity": 1
+    },
+    {
+      "name": "Ejemplo por ASIN",
+      "asin": "B0YYYYYYYY",
+      "max_price": 19.5,
+      "quantity": 2
+    }
+  ]
+}

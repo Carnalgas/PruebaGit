@@ -351,3 +351,7 @@ MigrationBackup/
 
 # Ionide (cross platform F# VS Code tools) working folder
 .ionide/
+# amazon_bot
+amazon_bot/.browser_profile/
+amazon_bot/.purchased.json
+amazon_bot/products.json
