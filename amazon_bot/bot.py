@@ -136,41 +136,69 @@ def product_asin(p: dict):
     return m.group(1) if m else None
 
 
-def open_all_offers(page: Page, p: dict, domain: str) -> bool:
-    """Abre el panel 'Ver todas las opciones de compra'. True si se ve al menos una oferta."""
-    offers_sel = "#aod-pinned-offer, #aod-offer-list #aod-offer"
-    link = page.locator("#buybox-see-all-buying-choices a, a#aod-ingress-link, "
-                        "#aod-ingress-link a, a[href*='aod=1']")
+LAST_AOD_ERROR = ""
+
+
+def _wait_offers_loaded(page: Page, offers_sel: str):
+    # La oferta fijada (la del precio principal) aparece primero; la lista llega después.
     try:
-        if link.count():
-            link.first.click(timeout=5000)
-        else:
-            asin = product_asin(p)
-            if not asin:
-                return False
-            safe_goto(page, f"https://{domain}/dp/{asin}?aod=1")
-        page.wait_for_selector(offers_sel, timeout=10000)
-        # La oferta fijada (la del precio principal) aparece primero; la lista llega después.
+        page.wait_for_selector("#aod-offer-list #aod-offer", timeout=5000)
+    except PWTimeout:
+        pass  # puede que solo exista la oferta fijada
+    # Esperar a que el número de ofertas deje de cambiar.
+    prev, stable = -1, 0
+    for _ in range(12):
+        n = page.locator(offers_sel).count()
+        stable = stable + 1 if n == prev else 0
+        if stable >= 2:
+            break
+        prev = n
+        page.wait_for_timeout(400)
+
+
+def open_all_offers(page: Page, p: dict, domain: str) -> bool:
+    """Abre el panel 'Ver todas las opciones de compra'. True si se ve al menos una oferta.
+    Prueba: 1) clic en el enlace visible, 2) abrir la página con ?aod=1."""
+    global LAST_AOD_ERROR
+    offers_sel = "#aod-pinned-offer, #aod-offer-list #aod-offer"
+    tried = []
+
+    # 1) Clic en el enlace, si hay uno visible.
+    links = page.locator("#buybox-see-all-buying-choices a, a#aod-ingress-link, #aod-ingress-link a, "
+                         "#aod-ingress-link, a[href*='aod=1'], a[href*='/gp/offer-listing/']")
+    clicked = False
+    for i in range(min(links.count(), 6)):
+        lk = links.nth(i)
         try:
-            page.wait_for_selector("#aod-offer-list #aod-offer", timeout=5000)
-        except PWTimeout:
-            pass  # puede que solo exista la oferta fijada
-        try:
-            page.wait_for_load_state("networkidle", timeout=4000)
-        except PWTimeout:
-            pass
-        # Esperar a que el número de ofertas deje de cambiar.
-        prev, stable = -1, 0
-        for _ in range(10):
-            n = page.locator(offers_sel).count()
-            stable = stable + 1 if n == prev else 0
-            if stable >= 2:
-                break
-            prev = n
-            page.wait_for_timeout(400)
-        return True
-    except (PWError, PWTimeout):
+            if not lk.is_visible():
+                continue
+            lk.scroll_into_view_if_needed(timeout=3000)
+            lk.click(timeout=5000)
+            clicked = True
+            page.wait_for_selector(offers_sel, timeout=8000)
+            _wait_offers_loaded(page, offers_sel)
+            return True
+        except (PWError, PWTimeout) as e:
+            tried.append(f"clic en enlace {i}: {str(e).splitlines()[0][:80]}")
+            if clicked:
+                break  # se hizo clic pero el panel no apareció: pasar al plan B
+    if not clicked:
+        tried.append("no hay enlace 'Ver todas las opciones de compra' visible")
+
+    # 2) Abrir la página del producto con el panel ya desplegado.
+    asin = product_asin(p)
+    if not asin:
+        LAST_AOD_ERROR = "; ".join(tried + ["no conozco el ASIN para abrir ?aod=1"])
         return False
+    try:
+        safe_goto(page, f"https://{domain}/dp/{asin}?aod=1")
+        page.wait_for_selector(offers_sel, timeout=12000)
+        _wait_offers_loaded(page, offers_sel)
+        return True
+    except (PWError, PWTimeout) as e:
+        tried.append(f"?aod=1: {str(e).splitlines()[0][:80]}")
+    LAST_AOD_ERROR = "; ".join(tried)
+    return False
 
 
 VERBOSE = False
@@ -334,7 +362,7 @@ def try_buy(page: Page, p: dict, domain: str, live: bool) -> str:
         why = "sin botón de compra" if not has_buybox else \
             ("sin precio" if price is None else f"precio principal {price:.2f} > máximo {p['max_price']:.2f}")
         if not open_all_offers(page, p, domain):
-            return f"skip:{why} y no hay otras ofertas"
+            return f"skip:{why} y no se pudo abrir 'opciones de compra' ({LAST_AOD_ERROR})"
         offer = best_offer(page, p)
         if offer is None:
             return f"skip:{why} y ninguna oferta en 'opciones de compra' cumple las condiciones"
