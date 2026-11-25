@@ -303,6 +303,89 @@ def wait_captcha_solved(page: Page, headless: bool, wait_seconds: int = 300) -> 
     return False
 
 
+def cart_count(page: Page):
+    try:
+        t = page.locator("#nav-cart-count").first.text_content(timeout=1000)
+        return int(re.sub(r"\D", "", t or "") or 0)
+    except (PWError, PWTimeout, ValueError):
+        return None
+
+
+def dismiss_protection_offer(page: Page):
+    """Cierra la ventana 'Agregar plan de protección' que Amazon muestra al agregar al carrito."""
+    for sel in ("#attachSiNoCoverage input", "#attachSiNoCoverage",
+                "input[aria-labelledby='attachSiNoCoverage-announce']",
+                "#siNoCoverage-announce", "button:has-text('No, gracias')",
+                "span.a-button:has-text('No, gracias') input"):
+        try:
+            loc = page.locator(sel).first
+            if loc.count() and loc.is_visible():
+                loc.click(timeout=2000)
+                return
+        except (PWError, PWTimeout):
+            continue
+
+
+def wait_added_to_cart(page: Page, before, seconds: float = 8) -> bool:
+    """Espera a que suba el contador del carrito (o a la confirmación 'Agregado')."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        page.wait_for_timeout(400)
+        dismiss_protection_offer(page)
+        now = cart_count(page)
+        if before is not None and now is not None and now > before:
+            return True
+        try:
+            if page.locator("#NATC_SMART_WAGON_CONF_MSG_SUCCESS, #sw-atc-confirmation, "
+                            "#attach-added-to-cart-message, #aod-offer-added-to-cart").count():
+                return True
+        except PWError:
+            pass
+    return False
+
+
+CHECKOUT_SELECTORS = (
+    "input[name='proceedToRetailCheckout']",
+    "#sc-buy-box-ptc-button input",
+    "#sc-buy-box-ptc-button button",
+    "[data-feature-id='proceed-to-checkout-action'] input",
+    "#sc-buy-box-ptc-button",
+)
+
+
+def go_to_checkout(page: Page, domain: str) -> str:
+    """Del carrito a la pantalla de pago. Devuelve '' si lo logró o el motivo si no."""
+    safe_goto(page, f"https://{domain}/gp/cart/view.html")
+    try:
+        page.wait_for_selector(", ".join(CHECKOUT_SELECTORS) + ", #sc-active-cart, .sc-your-amazon-cart-is-empty",
+                               timeout=10000)
+    except PWTimeout:
+        pass
+    if page.locator(".sc-your-amazon-cart-is-empty, #sc-empty-cart").count():
+        return "el carrito está vacío (el producto no se agregó)"
+    for sel in CHECKOUT_SELECTORS:
+        loc = page.locator(sel).first
+        try:
+            if loc.count() and loc.is_visible():
+                loc.click(timeout=5000)
+                return ""
+        except (PWError, PWTimeout):
+            continue
+    try:
+        btn = page.get_by_role("button", name=re.compile(r"proceder al pago|proceed to checkout", re.I))
+        if btn.count():
+            btn.first.click(timeout=5000)
+            return ""
+    except (PWError, PWTimeout):
+        pass
+    # Último recurso: la dirección a la que lleva el botón "Proceder al pago".
+    try:
+        safe_goto(page, f"https://{domain}/gp/cart/desktop/go-to-checkout.html?proceedToCheckout=1")
+        return ""
+    except PWError as e:
+        return f"no encontré 'Proceder al pago' en el carrito ({str(e).splitlines()[0][:60]})"
+
+
 def try_buy(page: Page, p: dict, domain: str, live: bool) -> str:
     """Devuelve: 'bought' | 'dry-run' | 'skip:<motivo>'."""
     name = p.get("name", product_key(p))
@@ -323,9 +406,12 @@ def try_buy(page: Page, p: dict, domain: str, live: bool) -> str:
         if buy_now.count():
             buy_now.first.click()
         else:
+            before = cart_count(page)
             add_cart.first.click()
-            safe_goto(page, f"https://{domain}/gp/cart/view.html")
-            page.locator("input[name='proceedToRetailCheckout']").first.click()
+            wait_added_to_cart(page, before)
+            err = go_to_checkout(page, domain)
+            if err:
+                return f"skip:{err}"
     else:
         # Sin botón de compra, o el precio principal es caro: revisar "Ver todas las opciones de compra".
         why = "sin botón de compra" if not has_buybox else \
@@ -339,10 +425,14 @@ def try_buy(page: Page, p: dict, domain: str, live: bool) -> str:
             return "skip:hay oferta en 'opciones de compra' pero solo se admite quantity 1 por esa vía"
         button, price, ship, seller = offer
         source = f"opciones de compra (vendedor: {seller}, envío {ship:.2f})"
+        before = cart_count(page)
+        button.scroll_into_view_if_needed()
         button.click()
-        page.wait_for_timeout(2000)
-        safe_goto(page, f"https://{domain}/gp/cart/view.html")
-        page.locator("input[name='proceedToRetailCheckout']").first.click()
+        if not wait_added_to_cart(page, before):
+            print("  Aviso: no vi la confirmación de 'Agregado al carrito'; reviso el carrito.")
+        err = go_to_checkout(page, domain)
+        if err:
+            return f"skip:{err}"
 
     # Pantalla de revisión del pedido
     try:
@@ -410,10 +500,16 @@ def main():
                 break
             for p in pending:
                 t0 = time.time()
-                res = try_buy(page, p, domain, args.live)
+                try:
+                    res = try_buy(page, p, domain, args.live)
+                except (PWError, PWTimeout) as e:
+                    res = f"skip:error inesperado ({str(e).splitlines()[0][:100]})"
                 if res == "captcha":
                     if wait_captcha_solved(page, args.headless):
-                        res = try_buy(page, p, domain, args.live)
+                        try:
+                            res = try_buy(page, p, domain, args.live)
+                        except (PWError, PWTimeout) as e:
+                            res = f"skip:error inesperado ({str(e).splitlines()[0][:100]})"
                     else:
                         res = "skip:captcha sin resolver"
                 print(f"[{time.strftime('%H:%M:%S')}] {p.get('name', product_key(p))}: {res} "
